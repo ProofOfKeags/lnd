@@ -131,7 +131,7 @@ func (m *PingManager) pingHandler() {
 				e := errors.New("impossible: new ping" +
 					"in unclean state",
 				)
-				go m.cfg.OnPongFailure(e)
+				m.cfg.OnPongFailure(e)
 
 				return
 			}
@@ -145,7 +145,7 @@ func (m *PingManager) pingHandler() {
 			// Set up our bookkeeping for the new Ping.
 			if err := m.setPingState(pongSize); err != nil {
 
-				go m.cfg.OnPongFailure(err)
+				m.cfg.OnPongFailure(err)
 
 				return
 			}
@@ -159,7 +159,7 @@ func (m *PingManager) pingHandler() {
 				"pong response",
 			)
 
-			go m.cfg.OnPongFailure(e)
+			m.cfg.OnPongFailure(e)
 
 			return
 
@@ -180,7 +180,7 @@ func (m *PingManager) pingHandler() {
 					"not match expected size",
 				)
 
-				go m.cfg.OnPongFailure(e)
+				m.cfg.OnPongFailure(e)
 
 				return
 			}
