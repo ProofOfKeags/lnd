@@ -103,7 +103,7 @@ func (m *PingManager) Start() error {
 		m.pingTimeout = time.NewTimer(0)
 
 		m.wg.Add(1)
-		m.pingHandler()
+		go m.pingHandler()
 	})
 
 	return err
