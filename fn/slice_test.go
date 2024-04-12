@@ -3,6 +3,8 @@ package fn
 import (
 	"slices"
 	"testing"
+	"testing/quick"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -135,4 +137,49 @@ func TestZipWith(t *testing.T) {
 	require.True(t, slices.Equal(
 		z, []bool{false, true, false, false, false},
 	))
+}
+
+func TestPropForEachConcMapIsomorphism(t *testing.T) {
+	f := func(incSize int, s []int) bool {
+		inc := func(i int) int { return i + incSize }
+		mapped := Map(inc, s)
+		conc := ForEachConc(inc, s)
+
+		return slices.Equal(mapped, conc)
+	}
+	if err := quick.Check(f, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPropForEachConcOutperformsMapWhenExpensive(t *testing.T) {
+	f := func(incSize int, s []int) bool {
+		inc := func(i int) int {
+			time.Sleep(time.Millisecond)
+			return i + incSize
+		}
+		c := make(chan bool, 1)
+
+		go func() {
+			Map(inc, s)
+			select {
+			case c <- false:
+			default:
+			}
+		}()
+
+		go func() {
+			ForEachConc(inc, s)
+			select {
+			case c <- true:
+			default:
+			}
+		}()
+
+		return <-c
+	}
+
+	if err := quick.Check(f, nil); err != nil {
+		t.Fatal(err)
+	}
 }
