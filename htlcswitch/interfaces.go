@@ -60,7 +60,7 @@ type packetHandler interface {
 type dustHandler interface {
 	// getDustSum returns the dust sum on either the local or remote
 	// commitment.
-	getDustSum(remote bool) lnwire.MilliSatoshi
+	getDustSum(commitment lntypes.ChannelParty) lnwire.MilliSatoshi
 
 	// getFeeRate returns the current channel feerate.
 	getFeeRate() chainfee.SatPerKWeight

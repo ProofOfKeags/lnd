@@ -17,6 +17,7 @@ import (
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 )
 
@@ -413,7 +414,7 @@ func (c *chainWatcher) handleUnknownLocalState(
 	// and remote keys for this state. We use our point as only we can
 	// revoke our own commitment.
 	commitKeyRing := lnwallet.DeriveCommitmentKeys(
-		commitPoint, true, c.cfg.chanState.ChanType,
+		commitPoint, lntypes.Local, c.cfg.chanState.ChanType,
 		&c.cfg.chanState.LocalChanCfg, &c.cfg.chanState.RemoteChanCfg,
 	)
 
