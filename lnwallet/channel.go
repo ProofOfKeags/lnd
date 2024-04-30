@@ -2,7 +2,6 @@ package lnwallet
 
 import (
 	"bytes"
-	"container/list"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -26,6 +25,7 @@ import (
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/channeldb/models"
+	"github.com/lightningnetwork/lnd/fn"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -1000,13 +1000,13 @@ type commitmentChain struct {
 	// commitments are added to the end of the chain with increase height.
 	// Once a commitment transaction is revoked, the tail is incremented,
 	// freeing up the revocation window for new commitments.
-	commitments *list.List
+	commitments *fn.List[*commitment]
 }
 
 // newCommitmentChain creates a new commitment chain.
 func newCommitmentChain() *commitmentChain {
 	return &commitmentChain{
-		commitments: list.New(),
+		commitments: fn.NewList[*commitment](),
 	}
 }
 
@@ -1027,12 +1027,12 @@ func (s *commitmentChain) advanceTail() {
 
 // tip returns the latest commitment added to the chain.
 func (s *commitmentChain) tip() *commitment {
-	return s.commitments.Back().Value.(*commitment)
+	return s.commitments.Back().Value
 }
 
 // tail returns the lowest unrevoked commitment transaction in the chain.
 func (s *commitmentChain) tail() *commitment {
-	return s.commitments.Front().Value.(*commitment)
+	return s.commitments.Front().Value
 }
 
 // hasUnackedCommitment returns true if the commitment chain has more than one
@@ -1066,17 +1066,17 @@ type updateLog struct {
 	htlcCounter uint64
 
 	// List is the updatelog itself, we embed this value so updateLog has
-	// access to all the method of a list.List.
-	*list.List
+	// access to all the method of a fn.List.
+	*fn.List[*PaymentDescriptor]
 
 	// updateIndex maps a `logIndex` to a particular update entry. It
 	// deals with the four update types:
 	//   `Fail|MalformedFail|Settle|FeeUpdate`
-	updateIndex map[uint64]*list.Element
+	updateIndex map[uint64]*fn.Node[*PaymentDescriptor]
 
 	// htlcIndex maps a `htlcCounter` to an offered HTLC entry, hence the
 	// `Add` update.
-	htlcIndex map[uint64]*list.Element
+	htlcIndex map[uint64]*fn.Node[*PaymentDescriptor]
 
 	// modifiedHtlcs is a set that keeps track of all the current modified
 	// htlcs, hence update types `Fail|MalformedFail|Settle`. A modified
@@ -1088,9 +1088,9 @@ type updateLog struct {
 // newUpdateLog creates a new updateLog instance.
 func newUpdateLog(logIndex, htlcCounter uint64) *updateLog {
 	return &updateLog{
-		List:          list.New(),
-		updateIndex:   make(map[uint64]*list.Element),
-		htlcIndex:     make(map[uint64]*list.Element),
+		List:          fn.NewList[*PaymentDescriptor](),
+		updateIndex:   make(map[uint64]*fn.Node[*PaymentDescriptor]),
+		htlcIndex:     make(map[uint64]*fn.Node[*PaymentDescriptor]),
 		logIndex:      logIndex,
 		htlcCounter:   htlcCounter,
 		modifiedHtlcs: make(map[uint64]struct{}),
@@ -1141,7 +1141,7 @@ func (u *updateLog) lookupHtlc(i uint64) *PaymentDescriptor {
 		return nil
 	}
 
-	return htlc.Value.(*PaymentDescriptor)
+	return htlc.Value
 }
 
 // remove attempts to remove an entry from the update log. If the entry is
@@ -1184,14 +1184,14 @@ func compactLogs(ourLog, theirLog *updateLog,
 	localChainTail, remoteChainTail uint64) {
 
 	compactLog := func(logA, logB *updateLog) {
-		var nextA *list.Element
+		var nextA *fn.Node[*PaymentDescriptor]
 		for e := logA.Front(); e != nil; e = nextA {
 			// Assign next iteration element at top of loop because
 			// we may remove the current element from the list,
 			// which can change the iterated sequence.
 			nextA = e.Next()
 
-			htlc := e.Value.(*PaymentDescriptor)
+			htlc := e.Value
 
 			// We skip Adds, as they will be removed along with the
 			// fail/settles below.
@@ -2952,7 +2952,7 @@ type htlcView struct {
 func (lc *LightningChannel) fetchHTLCView(theirLogIndex, ourLogIndex uint64) *htlcView {
 	var ourHTLCs []*PaymentDescriptor
 	for e := lc.localUpdateLog.Front(); e != nil; e = e.Next() {
-		htlc := e.Value.(*PaymentDescriptor)
+		htlc := e.Value
 
 		// This HTLC is active from this point-of-view iff the log
 		// index of the state update is below the specified index in
@@ -2964,7 +2964,7 @@ func (lc *LightningChannel) fetchHTLCView(theirLogIndex, ourLogIndex uint64) *ht
 
 	var theirHTLCs []*PaymentDescriptor
 	for e := lc.remoteUpdateLog.Front(); e != nil; e = e.Next() {
-		htlc := e.Value.(*PaymentDescriptor)
+		htlc := e.Value
 
 		// If this is an incoming HTLC, then it is only active from
 		// this point-of-view if the index of the HTLC addition in
@@ -3611,7 +3611,7 @@ func (lc *LightningChannel) createCommitDiff(
 	// set of items we need to retransmit if we reconnect and find that
 	// they didn't process this new state fully.
 	for e := lc.localUpdateLog.Front(); e != nil; e = e.Next() {
-		pd := e.Value.(*PaymentDescriptor)
+		pd := e.Value
 
 		// If this entry wasn't committed at the exact height of this
 		// remote commitment, then we'll skip it as it was already
@@ -3749,7 +3749,7 @@ func (lc *LightningChannel) getUnsignedAckedUpdates() []channeldb.LogUpdate {
 	// remote party expects.
 	var logUpdates []channeldb.LogUpdate
 	for e := lc.remoteUpdateLog.Front(); e != nil; e = e.Next() {
-		pd := e.Value.(*PaymentDescriptor)
+		pd := e.Value
 
 		// Skip all remote updates that we have already included in our
 		// commit chain.
@@ -5727,7 +5727,7 @@ func (lc *LightningChannel) ReceiveRevocation(revMsg *lnwire.RevokeAndAck) (
 
 	var addIndex, settleFailIndex uint16
 	for e := lc.remoteUpdateLog.Front(); e != nil; e = e.Next() {
-		pd := e.Value.(*PaymentDescriptor)
+		pd := e.Value
 
 		// Fee updates are local to this particular channel, and should
 		// never be forwarded.
@@ -6054,7 +6054,7 @@ func (lc *LightningChannel) GetDustSum(whoseCommit lntypes.ChannelParty,
 
 	// Grab all of our HTLCs and evaluate against the dust limit.
 	for e := lc.localUpdateLog.Front(); e != nil; e = e.Next() {
-		pd := e.Value.(*PaymentDescriptor)
+		pd := e.Value
 		if pd.EntryType != Add {
 			continue
 		}
@@ -6073,7 +6073,7 @@ func (lc *LightningChannel) GetDustSum(whoseCommit lntypes.ChannelParty,
 
 	// Grab all of their HTLCs and evaluate against the dust limit.
 	for e := lc.remoteUpdateLog.Front(); e != nil; e = e.Next() {
-		pd := e.Value.(*PaymentDescriptor)
+		pd := e.Value
 		if pd.EntryType != Add {
 			continue
 		}
@@ -9013,7 +9013,7 @@ func (lc *LightningChannel) unsignedLocalUpdates(remoteMessageIndex,
 
 	var localPeerUpdates []channeldb.LogUpdate
 	for e := lc.localUpdateLog.Front(); e != nil; e = e.Next() {
-		pd := e.Value.(*PaymentDescriptor)
+		pd := e.Value
 
 		// We don't save add updates as they are restored from the
 		// remote commitment in restoreStateLogs.
