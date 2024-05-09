@@ -1664,16 +1664,18 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 
 	// We'll also validate and apply all the constraints the initiating
 	// party is attempting to dictate for our commitment transaction.
-	channelConstraints := &channeldb.ChannelConstraints{
-		DustLimit:        msg.DustLimit,
+	stateSpaceBounds := &channeldb.ChannelStateSpaceBounds{
 		ChanReserve:      msg.ChannelReserve,
 		MaxPendingAmount: msg.MaxValueInFlight,
 		MinHTLC:          msg.HtlcMinimum,
 		MaxAcceptedHtlcs: msg.MaxAcceptedHTLCs,
-		CsvDelay:         msg.CsvDelay,
+	}
+	renderingParams := &channeldb.CommitmentRenderingParams{
+		DustLimit: msg.DustLimit,
+		CsvDelay:  msg.CsvDelay,
 	}
 	err = reservation.CommitConstraints(
-		channelConstraints, f.cfg.MaxLocalCSVDelay, true,
+		stateSpaceBounds, renderingParams, f.cfg.MaxLocalCSVDelay, true,
 	)
 	if err != nil {
 		log.Errorf("Unacceptable channel constraints: %v", err)
@@ -1773,7 +1775,7 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 	// interactively.
 	ourContribution := reservation.OurContribution()
 	forwardingPolicy := f.defaultForwardingPolicy(
-		ourContribution.ChannelConstraints,
+		ourContribution.ChannelStateSpaceBounds,
 	)
 
 	// Once the reservation has been created successfully, we add it to
@@ -1803,37 +1805,41 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 	// Update the timestamp once the fundingOpenMsg has been handled.
 	defer resCtx.updateTimestamp()
 
+	cfg := channeldb.ChannelConfig{
+		ChannelStateSpaceBounds: channeldb.ChannelStateSpaceBounds{
+			MaxPendingAmount: remoteMaxValue,
+			ChanReserve:      chanReserve,
+			MinHTLC:          minHtlc,
+			MaxAcceptedHtlcs: maxHtlcs,
+		},
+		CommitmentRenderingParams: channeldb.CommitmentRenderingParams{
+			DustLimit: msg.DustLimit,
+			CsvDelay:  remoteCsvDelay,
+		},
+		MultiSigKey: keychain.KeyDescriptor{
+			PubKey: copyPubKey(msg.FundingKey),
+		},
+		RevocationBasePoint: keychain.KeyDescriptor{
+			PubKey: copyPubKey(msg.RevocationPoint),
+		},
+		PaymentBasePoint: keychain.KeyDescriptor{
+			PubKey: copyPubKey(msg.PaymentPoint),
+		},
+		DelayBasePoint: keychain.KeyDescriptor{
+			PubKey: copyPubKey(msg.DelayedPaymentPoint),
+		},
+		HtlcBasePoint: keychain.KeyDescriptor{
+			PubKey: copyPubKey(msg.HtlcPoint),
+		},
+	}
+
 	// With our parameters set, we'll now process their contribution so we
 	// can move the funding workflow ahead.
 	remoteContribution := &lnwallet.ChannelContribution{
 		FundingAmount:        amt,
 		FirstCommitmentPoint: msg.FirstCommitmentPoint,
-		ChannelConfig: &channeldb.ChannelConfig{
-			ChannelConstraints: channeldb.ChannelConstraints{
-				DustLimit:        msg.DustLimit,
-				MaxPendingAmount: remoteMaxValue,
-				ChanReserve:      chanReserve,
-				MinHTLC:          minHtlc,
-				MaxAcceptedHtlcs: maxHtlcs,
-				CsvDelay:         remoteCsvDelay,
-			},
-			MultiSigKey: keychain.KeyDescriptor{
-				PubKey: copyPubKey(msg.FundingKey),
-			},
-			RevocationBasePoint: keychain.KeyDescriptor{
-				PubKey: copyPubKey(msg.RevocationPoint),
-			},
-			PaymentBasePoint: keychain.KeyDescriptor{
-				PubKey: copyPubKey(msg.PaymentPoint),
-			},
-			DelayBasePoint: keychain.KeyDescriptor{
-				PubKey: copyPubKey(msg.DelayedPaymentPoint),
-			},
-			HtlcBasePoint: keychain.KeyDescriptor{
-				PubKey: copyPubKey(msg.HtlcPoint),
-			},
-		},
-		UpfrontShutdown: msg.UpfrontShutdownScript,
+		ChannelConfig:        &cfg,
+		UpfrontShutdown:      msg.UpfrontShutdownScript,
 	}
 
 	if resCtx.reservation.IsTaproot() {
@@ -1860,8 +1866,12 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 
 	log.Infof("Sending fundingResp for pending_id(%x)",
 		msg.PendingChannelID)
-	log.Debugf("Remote party accepted commitment constraints: %v",
-		spew.Sdump(remoteContribution.ChannelConfig.ChannelConstraints))
+	bounds := remoteContribution.ChannelConfig.ChannelStateSpaceBounds
+	log.Debugf("Remote party accepted channel state space bounds: %v",
+		spew.Sdump(bounds))
+	rParams := remoteContribution.ChannelConfig.CommitmentRenderingParams
+	log.Debugf("Remote party accepted commitment rendering params: %v",
+		spew.Sdump(rParams))
 
 	// With the initiator's contribution recorded, respond with our
 	// contribution in the next message of the workflow.
@@ -2026,21 +2036,51 @@ func (f *Manager) funderProcessAcceptChannel(peer lnpeer.Peer,
 	// required confirmations, and also the set of channel constraints
 	// they've specified for commitment states we can create.
 	resCtx.reservation.SetNumConfsRequired(uint16(msg.MinAcceptDepth))
-	channelConstraints := &channeldb.ChannelConstraints{
-		DustLimit:        msg.DustLimit,
+	bounds := channeldb.ChannelStateSpaceBounds{
 		ChanReserve:      msg.ChannelReserve,
 		MaxPendingAmount: msg.MaxValueInFlight,
 		MinHTLC:          msg.HtlcMinimum,
 		MaxAcceptedHtlcs: msg.MaxAcceptedHTLCs,
-		CsvDelay:         msg.CsvDelay,
+	}
+	rParams := channeldb.CommitmentRenderingParams{
+		DustLimit: msg.DustLimit,
+		CsvDelay:  msg.CsvDelay,
 	}
 	err = resCtx.reservation.CommitConstraints(
-		channelConstraints, resCtx.maxLocalCsv, false,
+		&bounds, &rParams, resCtx.maxLocalCsv, false,
 	)
 	if err != nil {
 		log.Warnf("Unacceptable channel constraints: %v", err)
 		f.failFundingFlow(peer, cid, err)
 		return
+	}
+
+	cfg := channeldb.ChannelConfig{
+		ChannelStateSpaceBounds: channeldb.ChannelStateSpaceBounds{
+			MaxPendingAmount: resCtx.remoteMaxValue,
+			ChanReserve:      resCtx.remoteChanReserve,
+			MinHTLC:          resCtx.remoteMinHtlc,
+			MaxAcceptedHtlcs: resCtx.remoteMaxHtlcs,
+		},
+		CommitmentRenderingParams: channeldb.CommitmentRenderingParams{
+			DustLimit: msg.DustLimit,
+			CsvDelay:  resCtx.remoteCsvDelay,
+		},
+		MultiSigKey: keychain.KeyDescriptor{
+			PubKey: copyPubKey(msg.FundingKey),
+		},
+		RevocationBasePoint: keychain.KeyDescriptor{
+			PubKey: copyPubKey(msg.RevocationPoint),
+		},
+		PaymentBasePoint: keychain.KeyDescriptor{
+			PubKey: copyPubKey(msg.PaymentPoint),
+		},
+		DelayBasePoint: keychain.KeyDescriptor{
+			PubKey: copyPubKey(msg.DelayedPaymentPoint),
+		},
+		HtlcBasePoint: keychain.KeyDescriptor{
+			PubKey: copyPubKey(msg.HtlcPoint),
+		},
 	}
 
 	// The remote node has responded with their portion of the channel
@@ -2049,32 +2089,8 @@ func (f *Manager) funderProcessAcceptChannel(peer lnpeer.Peer,
 	// the funding transaction.
 	remoteContribution := &lnwallet.ChannelContribution{
 		FirstCommitmentPoint: msg.FirstCommitmentPoint,
-		ChannelConfig: &channeldb.ChannelConfig{
-			ChannelConstraints: channeldb.ChannelConstraints{
-				DustLimit:        msg.DustLimit,
-				MaxPendingAmount: resCtx.remoteMaxValue,
-				ChanReserve:      resCtx.remoteChanReserve,
-				MinHTLC:          resCtx.remoteMinHtlc,
-				MaxAcceptedHtlcs: resCtx.remoteMaxHtlcs,
-				CsvDelay:         resCtx.remoteCsvDelay,
-			},
-			MultiSigKey: keychain.KeyDescriptor{
-				PubKey: copyPubKey(msg.FundingKey),
-			},
-			RevocationBasePoint: keychain.KeyDescriptor{
-				PubKey: copyPubKey(msg.RevocationPoint),
-			},
-			PaymentBasePoint: keychain.KeyDescriptor{
-				PubKey: copyPubKey(msg.PaymentPoint),
-			},
-			DelayBasePoint: keychain.KeyDescriptor{
-				PubKey: copyPubKey(msg.DelayedPaymentPoint),
-			},
-			HtlcBasePoint: keychain.KeyDescriptor{
-				PubKey: copyPubKey(msg.HtlcPoint),
-			},
-		},
-		UpfrontShutdown: msg.UpfrontShutdownScript,
+		ChannelConfig:        &cfg,
+		UpfrontShutdown:      msg.UpfrontShutdownScript,
 	}
 
 	if resCtx.reservation.IsTaproot() {
@@ -2139,8 +2155,12 @@ func (f *Manager) funderProcessAcceptChannel(peer lnpeer.Peer,
 	log.Infof("pendingChan(%x): remote party proposes num_confs=%v, "+
 		"csv_delay=%v", pendingChanID[:], msg.MinAcceptDepth,
 		msg.CsvDelay)
-	log.Debugf("Remote party accepted commitment constraints: %v",
-		spew.Sdump(remoteContribution.ChannelConfig.ChannelConstraints))
+	bounds = remoteContribution.ChannelConfig.ChannelStateSpaceBounds
+	log.Debugf("Remote party accepted channel state space bounds: %v",
+		spew.Sdump(bounds))
+	rParams = remoteContribution.ChannelConfig.CommitmentRenderingParams
+	log.Debugf("Remote party accepted commitment rendering params: %v",
+		spew.Sdump(rParams))
 
 	// If the user requested funding through a PSBT, we cannot directly
 	// continue now and need to wait for the fully funded and signed PSBT
@@ -4062,7 +4082,7 @@ func (f *Manager) ensureInitialForwardingPolicy(chanID lnwire.ChannelID,
 			"falling back to default values: %v", err)
 
 		forwardingPolicy = f.defaultForwardingPolicy(
-			channel.LocalChanCfg.ChannelConstraints,
+			channel.LocalChanCfg.ChannelStateSpaceBounds,
 		)
 		needDBUpdate = true
 	}
@@ -4687,7 +4707,7 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 	// useBaseFee or useFeeRate are false the client did not provide fee
 	// values hence we assume default fee settings from the config.
 	forwardingPolicy := f.defaultForwardingPolicy(
-		ourContribution.ChannelConstraints,
+		ourContribution.ChannelStateSpaceBounds,
 	)
 	if baseFee != nil {
 		forwardingPolicy.BaseFee = lnwire.MilliSatoshi(*baseFee)
@@ -4742,16 +4762,18 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 	defer resCtx.updateTimestamp()
 
 	// Check the sanity of the selected channel constraints.
-	channelConstraints := &channeldb.ChannelConstraints{
-		DustLimit:        ourDustLimit,
+	bounds := &channeldb.ChannelStateSpaceBounds{
 		ChanReserve:      chanReserve,
 		MaxPendingAmount: maxValue,
 		MinHTLC:          minHtlcIn,
 		MaxAcceptedHtlcs: maxHtlcs,
-		CsvDelay:         remoteCsvDelay,
+	}
+	rParams := &channeldb.CommitmentRenderingParams{
+		DustLimit: ourDustLimit,
+		CsvDelay:  remoteCsvDelay,
 	}
 	err = lnwallet.VerifyConstraints(
-		channelConstraints, resCtx.maxLocalCsv, capacity,
+		bounds, rParams, resCtx.maxLocalCsv, capacity,
 	)
 	if err != nil {
 		_, reserveErr := f.cancelReservationCtx(peerKey, chanID, false)
@@ -5024,11 +5046,11 @@ func copyPubKey(pub *btcec.PublicKey) *btcec.PublicKey {
 // defaultForwardingPolicy returns the default forwarding policy based on the
 // default routing policy and our local channel constraints.
 func (f *Manager) defaultForwardingPolicy(
-	constraints channeldb.ChannelConstraints) *models.ForwardingPolicy {
+	bounds channeldb.ChannelStateSpaceBounds) *models.ForwardingPolicy {
 
 	return &models.ForwardingPolicy{
-		MinHTLCOut:    constraints.MinHTLC,
-		MaxHTLC:       constraints.MaxPendingAmount,
+		MinHTLCOut:    bounds.MinHTLC,
+		MaxHTLC:       bounds.MaxPendingAmount,
 		BaseFee:       f.cfg.DefaultRoutingPolicy.BaseFee,
 		FeeRate:       f.cfg.DefaultRoutingPolicy.FeeRate,
 		TimeLockDelta: f.cfg.DefaultRoutingPolicy.TimeLockDelta,
