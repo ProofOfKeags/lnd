@@ -3276,6 +3276,10 @@ func (l *channelLink) updateChannelFee(feePerKw chainfee.SatPerKWeight) error {
 // have already been acknowledged in the forwarding package will not be sent to
 // the switch.
 func (l *channelLink) processRemoteSettleFails(fwdPkg *channeldb.FwdPkg) {
+<<<<<<< HEAD
+=======
+
+>>>>>>> 45a09ddfe (htlcswitch+lnwallet: quarantine paymentDescriptor to lnwallet)
 	if len(fwdPkg.SettleFails) == 0 {
 		return
 	}
@@ -3295,6 +3299,10 @@ func (l *channelLink) processRemoteSettleFails(fwdPkg *channeldb.FwdPkg) {
 		// interface.
 
 		switch msg := update.UpdateMsg.(type) {
+<<<<<<< HEAD
+=======
+
+>>>>>>> 45a09ddfe (htlcswitch+lnwallet: quarantine paymentDescriptor to lnwallet)
 		// A settle for an HTLC we previously forwarded HTLC has been
 		// received. So we'll forward the HTLC to the switch which will
 		// handle propagating the settle to the prior hop.
