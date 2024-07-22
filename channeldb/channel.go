@@ -899,6 +899,18 @@ func (c *OpenChannel) String() string {
 	)
 }
 
+// OpeningParty returns the ChannelParty that originally opened this channel.
+func (c *OpenChannel) OpeningParty() lntypes.ChannelParty {
+	c.RLock()
+	defer c.RUnlock()
+
+	if c.IsInitiator {
+		return lntypes.Local
+	} else {
+		return lntypes.Remote
+	}
+}
+
 // ShortChanID returns the current ShortChannelID of this channel.
 func (c *OpenChannel) ShortChanID() lnwire.ShortChannelID {
 	c.RLock()

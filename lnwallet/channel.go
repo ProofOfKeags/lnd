@@ -8492,6 +8492,14 @@ func (lc *LightningChannel) ChanType() channeldb.ChannelType {
 	return lc.channelState.ChanType
 }
 
+// OpeningParty returns the ChannelParty that originally opened this channel.
+func (lc *LightningChannel) OpeningParty() lntypes.ChannelParty {
+	lc.RLock()
+	defer lc.RUnlock()
+
+	return lc.channelState.OpeningParty()
+}
+
 // FundingTxOut returns the funding output of the channel.
 func (lc *LightningChannel) FundingTxOut() *wire.TxOut {
 	lc.RLock()
