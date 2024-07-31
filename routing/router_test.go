@@ -24,6 +24,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/channeldb/models"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/fn"
 	"github.com/lightningnetwork/lnd/graph"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
@@ -1638,9 +1639,11 @@ func TestBuildRoute(t *testing.T) {
 	_, err = rand.Read(payAddr[:])
 	require.NoError(t, err)
 
+	noAmt := fn.None[lnwire.MilliSatoshi]()
+
 	// Create hop list for an unknown destination.
 	hops := []route.Vertex{ctx.aliases["b"], ctx.aliases["y"]}
-	_, err = ctx.router.BuildRoute(nil, hops, nil, 40, &payAddr)
+	_, err = ctx.router.BuildRoute(noAmt, hops, nil, 40, &payAddr)
 	noChanErr := ErrNoChannel{}
 	require.ErrorAs(t, err, &noChanErr)
 	require.Equal(t, 1, noChanErr.position)
@@ -1650,7 +1653,7 @@ func TestBuildRoute(t *testing.T) {
 	amt := lnwire.NewMSatFromSatoshis(100)
 
 	// Build the route for the given amount.
-	rt, err := ctx.router.BuildRoute(&amt, hops, nil, 40, &payAddr)
+	rt, err := ctx.router.BuildRoute(fn.Some(amt), hops, nil, 40, &payAddr)
 	require.NoError(t, err)
 
 	// Check that we get the expected route back. The total amount should be
@@ -1660,7 +1663,7 @@ func TestBuildRoute(t *testing.T) {
 	require.Equal(t, lnwire.MilliSatoshi(106000), rt.TotalAmount)
 
 	// Build the route for the minimum amount.
-	rt, err = ctx.router.BuildRoute(nil, hops, nil, 40, &payAddr)
+	rt, err = ctx.router.BuildRoute(noAmt, hops, nil, 40, &payAddr)
 	require.NoError(t, err)
 
 	// Check that we get the expected route back. The minimum that we can
@@ -1676,7 +1679,7 @@ func TestBuildRoute(t *testing.T) {
 	// Test a route that contains incompatible channel htlc constraints.
 	// There is no amount that can pass through both channel 5 and 4.
 	hops = []route.Vertex{ctx.aliases["e"], ctx.aliases["c"]}
-	_, err = ctx.router.BuildRoute(nil, hops, nil, 40, nil)
+	_, err = ctx.router.BuildRoute(noAmt, hops, nil, 40, nil)
 	require.Error(t, err)
 	noChanErr = ErrNoChannel{}
 	require.ErrorAs(t, err, &noChanErr)
@@ -1694,7 +1697,7 @@ func TestBuildRoute(t *testing.T) {
 	// amount that could be delivered to the receiver of 21819 msat, using
 	// policy of channel 3.
 	hops = []route.Vertex{ctx.aliases["b"], ctx.aliases["z"]}
-	rt, err = ctx.router.BuildRoute(nil, hops, nil, 40, &payAddr)
+	rt, err = ctx.router.BuildRoute(noAmt, hops, nil, 40, &payAddr)
 	require.NoError(t, err)
 	checkHops(rt, []uint64{1, 8}, payAddr)
 	require.Equal(t, lnwire.MilliSatoshi(21200), rt.TotalAmount)
@@ -1706,7 +1709,7 @@ func TestBuildRoute(t *testing.T) {
 	// We get 106000 - 1000 (base in) - 0.001 * 106000 (rate in) = 104894.
 	hops = []route.Vertex{ctx.aliases["d"], ctx.aliases["f"]}
 	amt = lnwire.NewMSatFromSatoshis(100)
-	rt, err = ctx.router.BuildRoute(&amt, hops, nil, 40, &payAddr)
+	rt, err = ctx.router.BuildRoute(fn.Some(amt), hops, nil, 40, &payAddr)
 	require.NoError(t, err)
 	checkHops(rt, []uint64{9, 10}, payAddr)
 	require.EqualValues(t, rt.TotalAmount, 104894)
@@ -1894,20 +1897,20 @@ func TestSenderAmtBackwardPass(t *testing.T) {
 	// A search for an amount that is below the minimum HTLC amount should
 	// fail.
 	_, _, err := senderAmtBackwardPass(
-		edgeUnifiers, false, minHTLC-1, &bandwidthHints,
+		edgeUnifiers, fn.Some(minHTLC-1), &bandwidthHints,
 	)
 	require.Error(t, err)
 
 	// Do a min amount search.
-	unifiedEdges, senderAmount, err := senderAmtBackwardPass(
-		edgeUnifiers, true, 1, &bandwidthHints,
+	_, senderAmount, err := senderAmtBackwardPass(
+		edgeUnifiers, fn.None[lnwire.MilliSatoshi](), &bandwidthHints,
 	)
 	require.NoError(t, err)
 	require.Equal(t, minHTLC+333+222+222+111, senderAmount)
 
 	// Do a search for a specific amount.
-	unifiedEdges, senderAmount, err = senderAmtBackwardPass(
-		edgeUnifiers, false, testReceiverAmt, &bandwidthHints,
+	unifiedEdges, senderAmount, err := senderAmtBackwardPass(
+		edgeUnifiers, fn.Some(testReceiverAmt), &bandwidthHints,
 	)
 	require.NoError(t, err)
 	require.Equal(t, testReceiverAmt+333+222+222+111, senderAmount)
@@ -1936,7 +1939,7 @@ func TestSenderAmtBackwardPass(t *testing.T) {
 	}
 
 	unifiedEdges, senderAmount, err = senderAmtBackwardPass(
-		edgeUnifiers, false, testReceiverAmt, &bandwidthHints,
+		edgeUnifiers, fn.Some(testReceiverAmt), &bandwidthHints,
 	)
 	require.NoError(t, err)
 
