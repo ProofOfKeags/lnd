@@ -1495,7 +1495,7 @@ func (r *ChannelRouter) BuildRoute(amt fn.Option[lnwire.MilliSatoshi],
 
 // getEdgeUnifiers returns a list of edge unifiers for the given route.
 func getEdgeUnifiers(source route.Vertex, hops []route.Vertex,
-	outgoingChans map[uint64]struct{},
+	outgoingChans fn.Set[uint64],
 	graph Graph) ([]*edgeUnifier, error) {
 
 	// Allocate a list that will contain the edge unifiers for this route.

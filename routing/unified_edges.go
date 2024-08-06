@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/channeldb/models"
+	"github.com/lightningnetwork/lnd/fn"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -28,13 +29,13 @@ type nodeEdgeUnifier struct {
 
 	// outChanRestr is an optional outgoing channel restriction for the
 	// local channel to use.
-	outChanRestr map[uint64]struct{}
+	outChanRestr fn.Set[uint64]
 }
 
 // newNodeEdgeUnifier instantiates a new nodeEdgeUnifier object. Channel
 // policies can be added to this object.
 func newNodeEdgeUnifier(sourceNode, toNode route.Vertex, useInboundFees bool,
-	outChanRestr map[uint64]struct{}) *nodeEdgeUnifier {
+	outChanRestr fn.Set[uint64]) *nodeEdgeUnifier {
 
 	return &nodeEdgeUnifier{
 		edgeUnifiers:   make(map[route.Vertex]*edgeUnifier),
@@ -58,7 +59,7 @@ func (u *nodeEdgeUnifier) addPolicy(fromNode route.Vertex,
 
 	// Skip channels if there is an outgoing channel restriction.
 	if localChan && u.outChanRestr != nil {
-		if _, ok := u.outChanRestr[edge.ChannelID]; !ok {
+		if !u.outChanRestr.Contains(edge.ChannelID) {
 			return
 		}
 	}
