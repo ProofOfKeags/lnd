@@ -1498,42 +1498,58 @@ func getEdgeUnifiers(source route.Vertex, hops []route.Vertex,
 	outgoingChans fn.Set[uint64],
 	graph Graph) ([]*edgeUnifier, error) {
 
-	// Allocate a list that will contain the edge unifiers for this route.
-	unifiers := make([]*edgeUnifier, len(hops))
+	// This is the full list of vertices along the route
+	full := append([]route.Vertex{source}, hops...)
 
-	// Traverse hops backwards to accumulate fees in the running amounts.
-	for i := len(hops) - 1; i >= 0; i-- {
-		toNode := hops[i]
+	// This is the list of vertices that are upstream of a channel edge.
+	ups := full[0 : len(full)-1]
 
-		var fromNode route.Vertex
-		if i == 0 {
-			fromNode = source
-		} else {
-			fromNode = hops[i-1]
-		}
+	// This is the list of vertices that are downstream of a channel edge.
+	downs := full[1:]
 
-		// Build unified policies for this hop based on the channels
-		// known in the graph.
+	// This function computes the edge between two vertices, if one exists.
+	fullEdge := func(from, to route.Vertex) fn.Result[*edgeUnifier] {
 		u := newNodeEdgeUnifier(
-			source, toNode, true, outgoingChans,
+			source, to, true, outgoingChans,
 		)
 
 		err := u.addGraphPolicies(graph)
 		if err != nil {
-			return nil, err
+			return fn.Err[*edgeUnifier](err)
 		}
 
-		// Exit if there are no channels.
-		edgeUnifier, ok := u.edgeUnifiers[fromNode]
+		edge, ok := u.edgeUnifiers[from]
 		if !ok {
-			log.Errorf("Cannot find policy for node %v", fromNode)
-			return nil, ErrNoChannel{position: i}
+			log.Errorf("Cannot find policy for node %v", from)
+			// NOTE: THIS POSITION IS WRONG AND IS ULTIMATELY WHY
+			// I THINK WE SHOULD MAKE THIS ERROR RETURN THE ACTUAL
+			// VERTEX KEYS.
+			return fn.Err[*edgeUnifier](ErrNoChannel{position: 0})
 		}
 
-		unifiers[i] = edgeUnifier
+		return fn.Ok(edge)
 	}
 
-	return unifiers, nil
+	// This is a function that collects a list of results and transforms it
+	// to a single result of the list, ejecting at the first error.
+	// NOTE: This function can be eliminated when #8985 is merged.
+	collect := func(l []fn.Result[*edgeUnifier]) fn.Result[[]*edgeUnifier] {
+		unifiers := make([]*edgeUnifier, 0)
+		for _, result := range l {
+			x, err := result.Unpack()
+			if err != nil {
+				return fn.Err[[]*edgeUnifier](err)
+			}
+			unifiers = append(unifiers, x)
+		}
+
+		return fn.Ok(unifiers)
+	}
+
+	// In the ultimate computation, we zip the upstream and downstream
+	// vertices together using the function that computes the edge between
+	// them and ensure there were no errors.
+	return collect(fn.ZipWith(fullEdge, ups, downs)).Unpack()
 }
 
 // senderAmtBackwardPass returns a list of unified edges for the given route and
