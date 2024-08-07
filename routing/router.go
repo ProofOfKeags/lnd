@@ -1523,33 +1523,34 @@ func getEdgeUnifiers(source route.Vertex, hops []route.Vertex,
 			log.Errorf("Cannot find policy for node %v", from)
 			// NOTE: THIS POSITION IS WRONG AND IS ULTIMATELY WHY
 			// I THINK WE SHOULD MAKE THIS ERROR RETURN THE ACTUAL
-			// VERTEX KEYS.
+			// VERTEX KEYS. WE "FIX IT IN POST" BELOW, BUT I THINK
+			// IT'S UGLY.
 			return fn.Err[*edgeUnifier](ErrNoChannel{position: 0})
 		}
 
 		return fn.Ok(edge)
 	}
 
-	// This is a function that collects a list of results and transforms it
-	// to a single result of the list, ejecting at the first error.
-	// NOTE: This function can be eliminated when #8985 is merged.
-	collect := func(l []fn.Result[*edgeUnifier]) fn.Result[[]*edgeUnifier] {
-		unifiers := make([]*edgeUnifier, 0)
-		for _, result := range l {
-			x, err := result.Unpack()
-			if err != nil {
-				return fn.Err[[]*edgeUnifier](err)
-			}
-			unifiers = append(unifiers, x)
-		}
-
-		return fn.Ok(unifiers)
-	}
-
 	// In the ultimate computation, we zip the upstream and downstream
 	// vertices together using the function that computes the edge between
 	// them and ensure there were no errors.
-	return collect(fn.ZipWith(fullEdge, ups, downs)).Unpack()
+	var edges []*edgeUnifier
+	for i, result := range fn.ZipWith(fullEdge, ups, downs) {
+		edge, err := result.Unpack()
+		if err != nil {
+			switch err := err.(type) {
+			case ErrNoChannel:
+				err.position = i
+				return nil, err
+			default:
+				return nil, err
+			}
+		}
+
+		edges = append(edges, edge)
+	}
+
+	return edges, nil
 }
 
 // senderAmtBackwardPass returns a list of unified edges for the given route and
