@@ -1449,7 +1449,7 @@ func (r *ChannelRouter) BuildRoute(amt fn.Option[lnwire.MilliSatoshi],
 	// as the amount to send, which can be used to determine the final
 	// receiver amount, if a minimal amount was requested.
 	pathEdges, senderAmt, err = senderAmtBackwardPass(
-		unifiers, amt, bandwidthHints,
+		0, unifiers, amt, bandwidthHints,
 	)
 	if err != nil {
 		return nil, err
@@ -1556,97 +1556,105 @@ func getEdgeUnifiers(source route.Vertex, hops []route.Vertex,
 // senderAmtBackwardPass returns a list of unified edges for the given route and
 // determines the amount that should be sent to fulfill min HTLC requirements.
 // The minimal sender amount can be searched for by using amt=None.
-func senderAmtBackwardPass(unifiers []*edgeUnifier,
+func senderAmtBackwardPass(position int, unifiers []*edgeUnifier,
 	amt fn.Option[lnwire.MilliSatoshi],
 	bandwidthHints bandwidthHints) ([]*unifiedEdge, lnwire.MilliSatoshi,
 	error) {
 
-	var unifiedEdges = make([]*unifiedEdge, len(unifiers))
-
-	// We traverse the route backwards and handle the last hop separately.
-	edgeUnifier := unifiers[len(unifiers)-1]
-
-	// incomingAmt tracks the amount that is forwarded on the edges of a
-	// route. The last hop only forwards the amount that the receiver should
-	// receive, as there are no fees paid to the last node.
-	// For minimum amount routes, aim to deliver at least 1 msat to
-	// the destination. There are nodes in the wild that have a
-	// min_htlc channel policy of zero, which could lead to a zero
-	// amount payment being made.
-	incomingAmt := amt.UnwrapOr(1)
-
-	// If using min amt, increase the amount if needed to fulfill min HTLC
-	// requirements.
-	if amt.IsNone() {
-		min := edgeUnifier.minAmt()
-		if min > incomingAmt {
-			incomingAmt = min
-		}
+	if len(unifiers) == 0 {
+		return nil, 0, fmt.Errorf("senderAmtBackwardPass: no unifiers")
 	}
 
-	// Get an edge for the specific amount that we want to forward.
-	edge := edgeUnifier.getEdge(incomingAmt, bandwidthHints, 0)
-	if edge == nil {
-		log.Errorf("Cannot find policy with amt=%v "+
-			"for hop %v", incomingAmt, len(unifiers)-1)
+	// This is the base case where we handle the last mile case. This is the
+	// seed we will use to build the route backwards.
+	if len(unifiers) == 1 {
+		unifier := unifiers[0]
 
-		return nil, 0, ErrNoChannel{position: len(unifiers) - 1}
-	}
-
-	unifiedEdges[len(unifiers)-1] = edge
-
-	// Handle the rest of the route except the last hop.
-	for i := len(unifiers) - 2; i >= 0; i-- {
-		edgeUnifier = unifiers[i]
-
-		// If using min amt, increase the amount if needed to fulfill
-		// min HTLC requirements.
-		if amt.IsNone() {
-			min := edgeUnifier.minAmt()
-			if min > incomingAmt {
-				incomingAmt = min
-			}
-		}
-
-		// A --current hop-- B --next hop: incomingAmt-- C
-		// The outbound fee paid to the current end node B is based on
-		// the amount that the next hop forwards and B's policy for that
-		// hop.
-		outboundFee := unifiedEdges[i+1].policy.ComputeFee(
-			incomingAmt,
+		// Define the last mile amount that needs to arrive at the
+		// destination. This is either the target amount, or the minimum
+		// HTLC size.
+		lastMileAmt := amt.UnwrapOr(
+			lnwire.MilliSatoshi(
+				math.Max(
+					float64(unifier.minAmt()),
+					float64(1),
+				),
+			),
 		)
 
-		netAmount := incomingAmt + outboundFee
-
-		// We need to select an edge that can forward the requested
-		// amount.
-		edge = edgeUnifier.getEdge(
-			netAmount, bandwidthHints, outboundFee,
-		)
+		edge := unifiers[0].getEdge(lastMileAmt, bandwidthHints, 0)
 		if edge == nil {
-			return nil, 0, ErrNoChannel{position: i}
+			log.Errorf("Cannot find policy with amt=%v "+
+				"for hop %v", lastMileAmt, position)
+
+			return nil, 0, ErrNoChannel{position}
 		}
 
-		// The fee paid to B depends on the current hop's inbound fee
-		// policy and on the outbound fee for the next hop as any
-		// inbound fee discount is capped by the outbound fee such that
-		// the total fee for B can't become negative.
-		inboundFee := calcCappedInboundFee(edge, netAmount, outboundFee)
-
-		fee := lnwire.MilliSatoshi(int64(outboundFee) + inboundFee)
-
-		log.Tracef("Select channel %v at position %v",
-			edge.policy.ChannelID, i)
-
-		// Finally, we update the amount that needs to flow into node B
-		// from A, which is the next hop's forwarding amount plus the
-		// fee for B: A --current hop: incomingAmt-- B --next hop-- C
-		incomingAmt += fee
-
-		unifiedEdges[i] = edge
+		return []*unifiedEdge{edge}, lastMileAmt, nil
 	}
 
-	return unifiedEdges, incomingAmt, nil
+
+	// With the base case out of the way, we enter the recursive case. Here
+	// we begin by making a recursive call and basically "assume" the rest
+	// of the route has been computed for us. We simply take the route we
+	// get back from the recursive call and prepend this hop.
+	laterEdges, outgoingAmt, err := senderAmtBackwardPass(
+		position+1, unifiers[1:], amt, bandwidthHints,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// The outbound fee is computed based off of the outgoing amount.
+	outboundFee := laterEdges[0].policy.ComputeFee(outgoingAmt)
+
+	// We define the vertex amount to be the amount that "reaches" the node
+	// forwarding it. We think of it this way because we are treating
+	// inbound fees as already being shaved off of this value.
+	toVertexAmt := outgoingAmt + outboundFee
+
+	// Now we try and find an incoming edge into this vertex that will allow
+	// payment of the toVertexAmt.
+	incomingEdge := unifiers[0].getEdge(
+		toVertexAmt, bandwidthHints, outboundFee,
+	)
+	if incomingEdge == nil {
+		return nil, 0, ErrNoChannel{position}
+	}
+
+	// Now that we have an edge selected, we grab the inbound fee on that
+	// edge.
+	inboundFee := calcCappedInboundFee(
+		incomingEdge, toVertexAmt, outboundFee,
+	)
+
+	// The nominal required amount we need to receive along the inbound edge
+	// is defined to be the vertexAmount + the inbound fee, which already
+	// includes the outbound fee.
+	nominalRequiredAmt := toVertexAmt + lnwire.MilliSatoshi(inboundFee)
+
+	// From here we make sure that we adjust the incoming amount upwards to
+	// be at least the minHTLC size on the incoming edge if we are allowing
+	// a dynamic amount.
+	incomingAmt := func() lnwire.MilliSatoshi {
+		if amt.IsSome() {
+			return nominalRequiredAmt
+		}
+
+		return lnwire.MilliSatoshi(
+			math.Max(
+				float64(unifiers[0].minAmt()),
+				float64(nominalRequiredAmt),
+			),
+		)
+	}()
+
+	// smash the edge incoming edge onto the front of the edges we get from
+	// the recursive call. Given that routes are short, this should be OK
+	// to do. If it is not, consider using a cons-list construction here.
+	edges := append([]*unifiedEdge{incomingEdge}, laterEdges...)
+
+	return edges, incomingAmt, nil
 }
 
 // receiverAmtForwardPass returns the amount that a receiver will receive after

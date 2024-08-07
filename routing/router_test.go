@@ -1897,20 +1897,21 @@ func TestSenderAmtBackwardPass(t *testing.T) {
 	// A search for an amount that is below the minimum HTLC amount should
 	// fail.
 	_, _, err := senderAmtBackwardPass(
-		edgeUnifiers, fn.Some(minHTLC-1), &bandwidthHints,
+		0, edgeUnifiers, fn.Some(minHTLC-1), &bandwidthHints,
 	)
 	require.Error(t, err)
 
 	// Do a min amount search.
 	_, senderAmount, err := senderAmtBackwardPass(
-		edgeUnifiers, fn.None[lnwire.MilliSatoshi](), &bandwidthHints,
+		0, edgeUnifiers, fn.None[lnwire.MilliSatoshi](),
+		&bandwidthHints,
 	)
 	require.NoError(t, err)
 	require.Equal(t, minHTLC+333+222+222+111, senderAmount)
 
 	// Do a search for a specific amount.
 	unifiedEdges, senderAmount, err := senderAmtBackwardPass(
-		edgeUnifiers, fn.Some(testReceiverAmt), &bandwidthHints,
+		0, edgeUnifiers, fn.Some(testReceiverAmt), &bandwidthHints,
 	)
 	require.NoError(t, err)
 	require.Equal(t, testReceiverAmt+333+222+222+111, senderAmount)
@@ -1939,7 +1940,7 @@ func TestSenderAmtBackwardPass(t *testing.T) {
 	}
 
 	unifiedEdges, senderAmount, err = senderAmtBackwardPass(
-		edgeUnifiers, fn.Some(testReceiverAmt), &bandwidthHints,
+		0, edgeUnifiers, fn.Some(testReceiverAmt), &bandwidthHints,
 	)
 	require.NoError(t, err)
 
